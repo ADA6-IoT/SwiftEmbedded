@@ -1,6 +1,5 @@
-## 실행 방법
-> 실행 방법을 순서대로 작성해주세여
-
+## 🔗 실행 방법
+> 실행 방법을 순서대로 코드로 작성해주세요
 
 ## 🔖 브랜치 컨벤션
 * `main` - 제품 출시 브랜치
@@ -12,10 +11,6 @@
 * `design/xx` - 디자인 변경
 * `bugfix/xx` - 디자인 변경
 
-
-
-<br>
-
 ## 🌀 코딩 컨벤션
 * 파라미터 이름을 기준으로 줄바꿈 한다.
 ```swift
@@ -26,8 +21,6 @@ let actionSheet = UIActionSheet(
   destructiveButtonTitle: "삭제해주세요"
 )
 ```
-
-<br>
 
 * if let 구문이 길 경우에 줄바꿈 한다
 ```swift
@@ -41,8 +34,6 @@ if let user = self.veryLongFunctionNameWhichReturnsOptionalUser(),
 * 나중에 추가로 작업해야 할 부분에 대해서는 `// TODO: - xxx 주석을 남기도록 한다.`
 * 코드의 섹션을 분리할 때는 `// MARK: - xxx 주석을 남기도록 한다.`
 * 함수에 대해 전부 주석을 남기도록 하여 무슨 액션을 하는지 알 수 있도록 한다.
-
-<br>
 
 ## 📁 PR 컨벤션
 * PR 시, 템플릿이 등장한다. 해당 템플릿에서 작성해야할 부분은 아래와 같다
@@ -72,8 +63,6 @@ if let user = self.veryLongFunctionNameWhichReturnsOptionalUser(),
 > 🐛 [Fix] iOS 17에서 버튼 클릭 오류 수정 <br>
 > 💄 [Design] 로그인 화면 레이아웃 조정 <br>
 > 📝 [Docs] README에 프로젝트 소개 추가 <br>
-
-<br>
 
 ## 📑 커밋 컨벤션
 
@@ -123,8 +112,6 @@ if let user = self.veryLongFunctionNameWhichReturnsOptionalUser(),
 > 🐛 [Fix] iOS 17에서 버튼 클릭 오류 수정 <br>
 > 💄 [Design] 로그인 화면 레이아웃 조정 <br>
 > 📝 [Docs] README에 프로젝트 소개 추가 <br>
-
-<br>
 
 ## 🗂️ 폴더 컨벤션
 ```
