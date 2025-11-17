@@ -66,7 +66,7 @@ typedef struct {
         int8_t rssi;                        // 신호 강도
         uint8_t sample_count;               // 사용된 유효 샘플 개수
         uint32_t rtt_nanoseconds;           // RTT (왕복 시간, 나노초)
-    } measurements[3];                      // 최대 3개 앵커 측정값
+    } measurements[3];                      // 앵커 측정값 (1~3개, 빈 슬롯은 MAC=0)
 } beacon_data_packet_t;
 
 // AP 레코드 구조체
@@ -792,12 +792,15 @@ void app_main(void) {
     // 데이터 취합 및 필터링
     beacon_data_packet_t packet = {0};
 
-    if (final_ftm_count < 3) {
-        ESP_LOGW(TAG, "FTM 측정값 부족 (%d < 3), Deep Sleep 진입", final_ftm_count);
+    // 최소 1개 이상의 FTM 측정값이 있어야 전송
+    if (final_ftm_count < 1) {
+        ESP_LOGW(TAG, "FTM 측정값 없음 (%d < 1), Deep Sleep 진입", final_ftm_count);
         free(final_ftm_results);
         esp_deep_sleep(SLEEP_DURATION_SEC * 1000000);
         return;
     }
+
+    ESP_LOGI(TAG, "FTM 측정 완료: %d개 앵커 데이터 수집 (최소 1개 이상 충족)", final_ftm_count);
 
     // 분산 기준으로 정렬 (버블 정렬)
     ESP_LOGI(TAG, "분산 기준으로 결과 정렬");
@@ -811,7 +814,7 @@ void app_main(void) {
         }
     }
 
-    // 상위 3개 결과를 패킷에 저장
+    // 측정 결과를 패킷에 저장 (최대 3개, 최소 1개)
     int result_count = (final_ftm_count < 3) ? final_ftm_count : 3;
     for (int i = 0; i < result_count; i++) {
         memcpy(packet.measurements[i].anchor_mac, final_ftm_results[i].mac, 6);
