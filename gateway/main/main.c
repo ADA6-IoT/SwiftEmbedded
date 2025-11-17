@@ -69,7 +69,7 @@ typedef struct {
         int8_t rssi;                        // 신호 강도
         uint8_t sample_count;               // 사용된 유효 샘플 개수
         uint32_t rtt_nanoseconds;           // RTT (왕복 시간, 나노초)
-    } measurements[3];                      // 최대 3개 앵커 측정값
+    } measurements[3];                      // 앵커 측정값 (1~3개, 빈 슬롯은 MAC=0)
 } beacon_data_packet_t;
 
 // 칼만 필터 상태 구조체
