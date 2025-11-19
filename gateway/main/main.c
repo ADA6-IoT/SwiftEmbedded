@@ -1030,9 +1030,15 @@ void app_main(void) {
 
     // NVS에서 설정 로드
     if (load_config_from_nvs() != ESP_OK) {
-        // 설정을 찾을 수 없으면 프로비저닝 콘솔 실행
-        run_provisioning_console();
-        // 여기 도달하면 설정이 저장되고 시스템이 재시작됨
+        // 전역 변수에 기본값이 있는지 체크
+        if (strlen(my_device_name) == 0 || my_floor_number == 0) {
+            // 빈 값이면 프로비저닝 콘솔 실행
+            run_provisioning_console();
+            // 여기 도달하면 설정이 저장되고 시스템이 재시작됨
+        } else {
+            // 기본값이 있으면 해당 값으로 진행
+            ESP_LOGI(TAG, "기본 설정값 사용 (NVS 없음)");
+        }
     }
 
     ESP_LOGI(TAG, "설정 로드 성공");
