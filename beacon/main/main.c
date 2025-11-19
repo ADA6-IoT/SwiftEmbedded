@@ -119,7 +119,6 @@ static float calculate_median(float *data, int count);
 static void remove_outliers_iqr(float *data, int *count);
 static esp_err_t init_battery_nvs(void);
 static int64_t get_start_time_from_nvs(void);
-static esp_err_t save_start_time_to_nvs(int64_t start_time);
 static uint8_t getBatteryLevel(void);
 
 
@@ -332,41 +331,6 @@ static int64_t get_start_time_from_nvs(void) {
 
     nvs_close(nvs_handle);
     return start_time;
-}
-
-/**
- * @brief NVS에 시작 시간 저장하기
- *
- * @param start_time 저장할 시작 시간 (마이크로초)
- * @return esp_err_t ESP_OK on success
- */
-static esp_err_t save_start_time_to_nvs(int64_t start_time) {
-    nvs_handle_t nvs_handle;
-    esp_err_t err;
-
-    err = nvs_open(NVS_NAMESPACE, NVS_READWRITE, &nvs_handle);
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "NVS 오픈 실패: %s", esp_err_to_name(err));
-        return err;
-    }
-
-    err = nvs_set_i64(nvs_handle, NVS_KEY_START_TIME, start_time);
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "시작 시간 저장 실패: %s", esp_err_to_name(err));
-        nvs_close(nvs_handle);
-        return err;
-    }
-
-    err = nvs_commit(nvs_handle);
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "NVS 커밋 실패: %s", esp_err_to_name(err));
-        nvs_close(nvs_handle);
-        return err;
-    }
-
-    nvs_close(nvs_handle);
-    ESP_LOGI(TAG, "시작 시간 저장 완료: %lld us", start_time);
-    return ESP_OK;
 }
 
 /**
