@@ -34,7 +34,7 @@
 #define STA_WIFI_SSID "S-Guest"
 #define STA_WIFI_PASSWORD ""
 #define NVS_NAMESPACE "gateway_cfg"
-#define SERVER_URL "http://192.168.129.100:5000/api/location"
+#define SERVER_URL "http://52.78.98.182:8080/api/locations/calculate"
 #define FLOOR_BROADCAST_INTERVAL_MS 1000    // 층 브로드캐스트 간격 (1초)
 #define MAX_HTTP_RETRY_COUNT 3              // HTTP 전송 최대 재시도 횟수
 #define SNTP_SERVER "pool.ntp.org"
