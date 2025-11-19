@@ -64,7 +64,7 @@ static const char* serial_number = "S-03";
 typedef struct {
     char serial_number[10];                 // 비콘 시리얼 번호
     uint8_t battery_level;                  // 배터리 잔량 (%)
-    uint8_t floor;                          // 층 번호
+    int8_t floor;                           // 층 번호 (-99~99)
     char timestamp[128];                    // ISO 8601 형식: "2025-10-22T21:15:30.123Z"
     struct {
         uint8_t anchor_mac[6];              // 앵커(게이트웨이) MAC 주소
@@ -93,7 +93,7 @@ typedef struct {
 // 층 정보 구조체
 typedef struct {
     uint8_t gateway_mac[6];                 // 게이트웨이 MAC 주소
-    uint8_t floor;                          // 층 번호
+    int8_t floor;                           // 층 번호 (-99~99)
     int8_t rssi;                            // 신호 강도
     uint8_t channel;                        // 채널 번호 (ESP-NOW 전송용)
 } floor_info_t;
@@ -111,7 +111,7 @@ static wifi_ftm_report_entry_t *ftm_report_data = NULL;
 // ===== 함수 선언 =====
 static void floor_recv_cb(const esp_now_recv_info_t *recv_info, const uint8_t *data, int len);
 static void data_send_cb(const uint8_t *mac_addr, esp_now_send_status_t status);
-static uint8_t calculate_floor_mode(void);
+static int8_t calculate_floor_mode(void);
 static esp_err_t send_data_with_retry(beacon_data_packet_t *packet);
 static esp_err_t perform_ftm_measurement(uint8_t *bssid, uint8_t channel, float *distance, float *variance, int *valid_count, uint32_t *rtt_ns);
 static int compare_floats(const void *a, const void *b);
@@ -224,24 +224,26 @@ static void data_send_cb(const uint8_t *mac_addr, esp_now_send_status_t status) 
 // ===== 층 계산 함수 =====
 
 // 층 최빈값 계산
-static uint8_t calculate_floor_mode(void) {
+static int8_t calculate_floor_mode(void) {
     if (floor_count == 0) return 0;
 
-    // 각 층의 출현 횟수 계산
-    uint8_t floor_counts[10] = {0};  // 최대 10층 가정
+    // 각 층의 출현 횟수 계산 (-99~99 범위, 인덱스 0~198)
+    uint8_t floor_counts[199] = {0};  // -99~99층 지원
     for (int i = 0; i < floor_count; i++) {
-        if (floor_list[i].floor < 10) {
-            floor_counts[floor_list[i].floor]++;
+        int8_t floor_value = floor_list[i].floor;
+        if (floor_value >= -99 && floor_value <= 99) {
+            int index = floor_value + 99;  // -99 → 0, 0 → 99, 99 → 198
+            floor_counts[index]++;
         }
     }
 
     // 최빈값 찾기
-    uint8_t mode_floor = 0;
+    int8_t mode_floor = 0;
     uint8_t max_count = 0;
-    for (int i = 0; i < 10; i++) {
+    for (int i = 0; i < 199; i++) {
         if (floor_counts[i] > max_count) {
             max_count = floor_counts[i];
-            mode_floor = i;
+            mode_floor = i - 99;  // 인덱스를 층 번호로 변환
         }
     }
 
@@ -1017,7 +1019,7 @@ void app_main(void) {
 
     // 6단계: 층 계산
     ESP_LOGI(TAG, "6단계: %d개 게이트웨이 리포트에서 층 계산", floor_count);
-    uint8_t my_floor = calculate_floor_mode();
+    int8_t my_floor = calculate_floor_mode();
 
     // 7단계: 패킷 생성
     ESP_LOGI(TAG, "7단계: 데이터 패킷 생성");

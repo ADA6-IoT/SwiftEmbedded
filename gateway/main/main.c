@@ -60,7 +60,7 @@ static bool config_loaded = false;
 typedef struct {
     char serial_number[10];                 // 비콘 시리얼 번호
     uint8_t battery_level;                  // 배터리 잔량 (%)
-    uint8_t floor;                          // 층 번호
+    int8_t floor;                           // 층 번호 (-99~99)
     char timestamp[128];                    // ISO 8601 형식: "2025-10-22T21:15:30.123Z"
     struct {
         uint8_t anchor_mac[6];              // 앵커(게이트웨이) MAC 주소
@@ -147,7 +147,7 @@ static int set_name_handler(int argc, char **argv) {
     printf("장치 이름 설정: %s\n", my_device_name);
 
     // 두 값이 모두 있으면 저장
-    if (my_floor_number > 0) {
+    if (my_floor_number != 0) {
         if (save_config_to_nvs(my_device_name, my_floor_number) == ESP_OK) {
             printf("설정 저장 완료. 재부팅 중...\n");
             vTaskDelay(pdMS_TO_TICKS(1000));
@@ -167,8 +167,8 @@ static int set_floor_handler(int argc, char **argv) {
     }
 
     int floor = set_floor_args.floor->ival[0];
-    if (floor < 1 || floor > 99) {
-        printf("오류: 층 번호는 1~99 사이여야 합니다\n");
+    if (floor < -99 || floor > 99 || floor == 0) {
+        printf("오류: 층 번호는 -99~99 사이여야 합니다 (0 제외)\n");
         return 1;
     }
 
@@ -646,7 +646,7 @@ static void initialize_sntp(void) {
 static void floor_broadcast_task(void *pvParameters) {
     ESP_LOGI(TAG, "층 브로드캐스트 태스크 시작");
 
-    uint8_t floor_data = (uint8_t)my_floor_number;
+    int8_t floor_data = (int8_t)my_floor_number;
     TickType_t last_wake_time = xTaskGetTickCount();
 
     while (1) {
@@ -654,7 +654,7 @@ static void floor_broadcast_task(void *pvParameters) {
         int jitter = esp_random() % 200 - 100;
 
         // ESP-NOW 브로드캐스트로 층 번호 전송
-        esp_err_t result = esp_now_send(broadcast_mac, &floor_data, sizeof(floor_data));
+        esp_err_t result = esp_now_send(broadcast_mac, (const uint8_t*)&floor_data, sizeof(floor_data));
 
         if (result == ESP_OK) {
             ESP_LOGD(TAG, "층 브로드캐스트 전송: %d", floor_data);
