@@ -14,6 +14,7 @@
 #include "esp_now.h"
 #include "esp_sleep.h"
 #include "nvs_flash.h"
+#include "nvs.h"
 #include "esp_netif.h"
 #include "esp_mac.h"
 #include <inttypes.h>
@@ -27,6 +28,13 @@
 #define MAX_RETRY_ATTEMPTS 3                // 데이터 전송 최대 재시도 횟수
 #define FLOOR_DISCOVERY_DURATION_MS 1000    // 층 정보 수집 시간 (ms)
 #define SLEEP_DURATION_SEC 5                // Deep Sleep 지속 시간 (초)
+
+// ===== 가상 배터리 설정 =====
+#define BATTERY_DECAY_INTERVAL_SEC 600      // 배터리 감소 간격 (10분 = 600초)
+#define BATTERY_DECAY_PERCENT 5             // 10분당 감소량 (5%)
+#define BATTERY_TOTAL_LIFETIME_SEC 12000    // 총 배터리 수명 (200분 = 12000초)
+#define NVS_NAMESPACE "battery"
+#define NVS_KEY_START_TIME "start_time"
 
 // ===== FTM 최적화 파라미터 =====
 #define FTM_FRAME_COUNT 24                  // FTM 프레임 개수 (24프레임 = 6버스트 x 4)
@@ -50,14 +58,13 @@
 
 static const char *TAG = "BEACON";
 static const char* serial_number = "S-03";
-static int battery_level = 91;
 
 // ===== 데이터 구조 =====
 // 비콘 데이터 패킷 구조체 (게이트웨이와 동일해야 함)
 typedef struct {
     char serial_number[10];                 // 비콘 시리얼 번호
     uint8_t battery_level;                  // 배터리 잔량 (%)
-    uint8_t floor;                          // 층 번호
+    int8_t floor;                           // 층 번호 (-99~99)
     char timestamp[128];                    // ISO 8601 형식: "2025-10-22T21:15:30.123Z"
     struct {
         uint8_t anchor_mac[6];              // 앵커(게이트웨이) MAC 주소
@@ -86,7 +93,7 @@ typedef struct {
 // 층 정보 구조체
 typedef struct {
     uint8_t gateway_mac[6];                 // 게이트웨이 MAC 주소
-    uint8_t floor;                          // 층 번호
+    int8_t floor;                           // 층 번호 (-99~99)
     int8_t rssi;                            // 신호 강도
     uint8_t channel;                        // 채널 번호 (ESP-NOW 전송용)
 } floor_info_t;
@@ -104,12 +111,15 @@ static wifi_ftm_report_entry_t *ftm_report_data = NULL;
 // ===== 함수 선언 =====
 static void floor_recv_cb(const esp_now_recv_info_t *recv_info, const uint8_t *data, int len);
 static void data_send_cb(const uint8_t *mac_addr, esp_now_send_status_t status);
-static uint8_t calculate_floor_mode(void);
+static int8_t calculate_floor_mode(void);
 static esp_err_t send_data_with_retry(beacon_data_packet_t *packet);
 static esp_err_t perform_ftm_measurement(uint8_t *bssid, uint8_t channel, float *distance, float *variance, int *valid_count, uint32_t *rtt_ns);
 static int compare_floats(const void *a, const void *b);
 static float calculate_median(float *data, int count);
 static void remove_outliers_iqr(float *data, int *count);
+static esp_err_t init_battery_nvs(void);
+static int64_t get_start_time_from_nvs(void);
+static uint8_t getBatteryLevel(void);
 
 
 // ===== 통계 유틸리티 함수 =====
@@ -213,29 +223,159 @@ static void data_send_cb(const uint8_t *mac_addr, esp_now_send_status_t status) 
 // ===== 층 계산 함수 =====
 
 // 층 최빈값 계산
-static uint8_t calculate_floor_mode(void) {
+static int8_t calculate_floor_mode(void) {
     if (floor_count == 0) return 0;
 
-    // 각 층의 출현 횟수 계산
-    uint8_t floor_counts[10] = {0};  // 최대 10층 가정
+    // 각 층의 출현 횟수 계산 (-99~99 범위, 인덱스 0~198)
+    uint8_t floor_counts[199] = {0};  // -99~99층 지원
     for (int i = 0; i < floor_count; i++) {
-        if (floor_list[i].floor < 10) {
-            floor_counts[floor_list[i].floor]++;
+        int8_t floor_value = floor_list[i].floor;
+        if (floor_value >= -99 && floor_value <= 99) {
+            int index = floor_value + 99;  // -99 → 0, 0 → 99, 99 → 198
+            floor_counts[index]++;
         }
     }
 
     // 최빈값 찾기
-    uint8_t mode_floor = 0;
+    int8_t mode_floor = 0;
     uint8_t max_count = 0;
-    for (int i = 0; i < 10; i++) {
+    for (int i = 0; i < 199; i++) {
         if (floor_counts[i] > max_count) {
             max_count = floor_counts[i];
-            mode_floor = i;
+            mode_floor = i - 99;  // 인덱스를 층 번호로 변환
         }
     }
 
     ESP_LOGI(TAG, "층 최빈값 계산: %d층 (출현 횟수: %d)", mode_floor, max_count);
     return mode_floor;
+}
+
+
+// ===== 가상 배터리 함수 =====
+
+/**
+ * @brief NVS 초기화 (배터리 네임스페이스)
+ *
+ * @return esp_err_t ESP_OK on success
+ */
+static esp_err_t init_battery_nvs(void) {
+    nvs_handle_t nvs_handle;
+    esp_err_t err;
+
+    // NVS 오픈
+    err = nvs_open(NVS_NAMESPACE, NVS_READWRITE, &nvs_handle);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "NVS 오픈 실패: %s", esp_err_to_name(err));
+        return err;
+    }
+
+    // 시작 시간이 존재하는지 확인
+    int64_t start_time = 0;
+    err = nvs_get_i64(nvs_handle, NVS_KEY_START_TIME, &start_time);
+
+    if (err == ESP_ERR_NVS_NOT_FOUND) {
+        // 시작 시간이 없으면 현재 시간을 시작 시간으로 저장
+        struct timeval tv_now;
+        gettimeofday(&tv_now, NULL);
+        int64_t now_us = (int64_t)tv_now.tv_sec * 1000000L + (int64_t)tv_now.tv_usec;
+
+        err = nvs_set_i64(nvs_handle, NVS_KEY_START_TIME, now_us);
+        if (err != ESP_OK) {
+            ESP_LOGE(TAG, "시작 시간 저장 실패: %s", esp_err_to_name(err));
+            nvs_close(nvs_handle);
+            return err;
+        }
+
+        err = nvs_commit(nvs_handle);
+        if (err != ESP_OK) {
+            ESP_LOGE(TAG, "NVS 커밋 실패: %s", esp_err_to_name(err));
+            nvs_close(nvs_handle);
+            return err;
+        }
+
+        ESP_LOGI(TAG, "새 시작 시간 저장: %lld us", now_us);
+    } else if (err == ESP_OK) {
+        ESP_LOGI(TAG, "기존 시작 시간 로드: %lld us", start_time);
+    } else {
+        ESP_LOGE(TAG, "시작 시간 읽기 실패: %s", esp_err_to_name(err));
+        nvs_close(nvs_handle);
+        return err;
+    }
+
+    nvs_close(nvs_handle);
+    return ESP_OK;
+}
+
+/**
+ * @brief NVS에서 시작 시간 가져오기
+ *
+ * @return int64_t 시작 시간 (마이크로초), 실패 시 0
+ */
+static int64_t get_start_time_from_nvs(void) {
+    nvs_handle_t nvs_handle;
+    esp_err_t err;
+    int64_t start_time = 0;
+
+    err = nvs_open(NVS_NAMESPACE, NVS_READONLY, &nvs_handle);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "NVS 오픈 실패: %s", esp_err_to_name(err));
+        return 0;
+    }
+
+    err = nvs_get_i64(nvs_handle, NVS_KEY_START_TIME, &start_time);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "시작 시간 읽기 실패: %s", esp_err_to_name(err));
+        nvs_close(nvs_handle);
+        return 0;
+    }
+
+    nvs_close(nvs_handle);
+    return start_time;
+}
+
+/**
+ * @brief 가상 배터리 레벨 계산
+ *
+ * 10분(600초)마다 5%씩 감소
+ * 총 배터리 수명: 200분 (12000초)
+ * Deep Sleep에서 깨어나도 NVS에 저장된 시작 시간을 기준으로 계산
+ *
+ * @return uint8_t 배터리 레벨 (0-100%)
+ */
+static uint8_t getBatteryLevel(void) {
+    // 시작 시간 가져오기
+    int64_t start_time_us = get_start_time_from_nvs();
+    if (start_time_us == 0) {
+        ESP_LOGW(TAG, "시작 시간을 가져올 수 없음, 100%% 반환");
+        return 100;
+    }
+
+    // 현재 시간 가져오기
+    struct timeval tv_now;
+    gettimeofday(&tv_now, NULL);
+    int64_t now_us = (int64_t)tv_now.tv_sec * 1000000L + (int64_t)tv_now.tv_usec;
+
+    // 누적 작동 시간 계산 (초 단위)
+    int64_t elapsed_us = now_us - start_time_us;
+    int64_t elapsed_sec = elapsed_us / 1000000L;
+
+    // 배터리 감소 계산
+    // 10분(600초)마다 5% 감소
+    int64_t decay_cycles = elapsed_sec / BATTERY_DECAY_INTERVAL_SEC;
+    int battery_decrease = (int)(decay_cycles * BATTERY_DECAY_PERCENT);
+
+    // 배터리 레벨 계산 (100%에서 시작)
+    int battery_level = 100 - battery_decrease;
+
+    // 0% 미만으로 떨어지지 않도록 보정
+    if (battery_level < 0) {
+        battery_level = 0;
+    }
+
+    ESP_LOGI(TAG, "배터리 계산: 경과시간=%lld초 (%.1f분), 감소사이클=%lld, 배터리=%d%%",
+             elapsed_sec, elapsed_sec / 60.0, decay_cycles, battery_level);
+
+    return (uint8_t)battery_level;
 }
 
 
@@ -562,6 +702,13 @@ void app_main(void) {
     }
     ESP_ERROR_CHECK(ret);
 
+    // 배터리 NVS 초기화 (시작 시간 저장/로드)
+    ESP_LOGI(TAG, "가상 배터리 NVS 초기화");
+    ret = init_battery_nvs();
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "배터리 NVS 초기화 실패, 계속 진행");
+    }
+
     // Wi-Fi 초기화 (스캔/FTM 전용 STA 모드)
     ESP_ERROR_CHECK(esp_netif_init());
     ESP_ERROR_CHECK(esp_event_loop_create_default());
@@ -836,12 +983,15 @@ void app_main(void) {
 
     // 6단계: 층 계산
     ESP_LOGI(TAG, "6단계: %d개 게이트웨이 리포트에서 층 계산", floor_count);
-    uint8_t my_floor = calculate_floor_mode();
+    int8_t my_floor = calculate_floor_mode();
 
     // 7단계: 패킷 생성
     ESP_LOGI(TAG, "7단계: 데이터 패킷 생성");
     strncpy(packet.serial_number, serial_number, sizeof(packet.serial_number) - 1);
-    packet.battery_level = battery_level;
+
+    // 가상 배터리 레벨 계산
+    packet.battery_level = getBatteryLevel();
+
     packet.floor = my_floor;
     // 타임스탬프는 게이트웨이 수신 시 채워짐
     strcpy(packet.timestamp, "");
