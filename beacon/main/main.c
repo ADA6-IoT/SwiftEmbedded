@@ -57,7 +57,7 @@
 #define MAX_VARIANCE_THRESHOLD 0.10f        // 보정 후 최대 허용 분산 (m²)
 
 static const char *TAG = "BEACON";
-static const char* serial_number = "S-03";
+static const char* serial_number = "H-02";
 
 // ===== 데이터 구조 =====
 // 비콘 데이터 패킷 구조체 (게이트웨이와 동일해야 함)
