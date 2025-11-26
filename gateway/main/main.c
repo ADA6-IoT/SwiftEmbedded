@@ -31,8 +31,8 @@
 #define AP_SSID "Gateway_Network"
 #define AP_PASSWORD ""
 #define AP_MAX_CONNECTIONS 10
-#define STA_WIFI_SSID "S-Guest"
-#define STA_WIFI_PASSWORD ""
+#define STA_WIFI_SSID "ToIStory"
+#define STA_WIFI_PASSWORD "20251127"
 #define NVS_NAMESPACE "gateway_cfg"
 #define SERVER_URL "http://52.78.98.182:8080/api/locations/calculate"
 #define FLOOR_BROADCAST_INTERVAL_MS 1000    // 층 브로드캐스트 간격 (1초)
@@ -46,8 +46,8 @@ static const char *TAG = "GATEWAY";
 static uint8_t broadcast_mac[ESP_NOW_ETH_ALEN] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
 
 // ===== 전역 변수 =====
-static char my_device_name[32] = {0};       // 게이트웨이 장치 이름
-static int32_t my_floor_number = 0;         // 게이트웨이 층 번호
+static char my_device_name[32] = {"desk"};       // 게이트웨이 장치 이름
+static int32_t my_floor_number = 6;         // 게이트웨이 층 번호
 static QueueHandle_t data_recv_queue;       // 비콘 데이터 수신 큐
 static EventGroupHandle_t wifi_event_group;
 static const int STA_CONNECTED_BIT = BIT0;
@@ -521,7 +521,7 @@ static void wifi_init_apsta(void) {
             .password = STA_WIFI_PASSWORD,
             .scan_method = WIFI_ALL_CHANNEL_SCAN,
             .failure_retry_cnt = 5,
-            .threshold.authmode = WIFI_AUTH_OPEN, //WIFI_AUTH_WPA2_PSK WIFI_AUTH_OPEN
+            .threshold.authmode = WIFI_AUTH_WPA2_PSK, //WIFI_AUTH_WPA2_PSK WIFI_AUTH_OPEN
             .sae_pwe_h2e = WPA3_SAE_PWE_BOTH,
         },
     };
