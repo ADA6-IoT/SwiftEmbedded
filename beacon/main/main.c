@@ -27,7 +27,8 @@
 #define MAX_FTM_CANDIDATES 6                // FTM 측정 최대 후보 AP 개수
 #define MAX_RETRY_ATTEMPTS 3                // 데이터 전송 최대 재시도 횟수
 #define FLOOR_DISCOVERY_DURATION_MS 1000    // 층 정보 수집 시간 (ms)
-#define SLEEP_DURATION_SEC 5                // Deep Sleep 지속 시간 (초)
+#define SLEEP_DURATION_SEC 0                // 정상 사이클 간 대기 시간 (0=즉시 다음 사이클)
+#define ERROR_RETRY_DELAY_SEC 3             // 에러 발생 시 재시도 대기 시간 (초)
 
 // ===== 가상 배터리 설정 =====
 #define BATTERY_DECAY_INTERVAL_SEC 600      // 배터리 감소 간격 (10분 = 600초)
@@ -57,7 +58,7 @@
 #define MAX_VARIANCE_THRESHOLD 0.10f        // 보정 후 최대 허용 분산 (m²)
 
 static const char *TAG = "BEACON";
-static const char* serial_number = "A-06";
+static const char* serial_number = "A-02";
 
 // ===== 데이터 구조 =====
 // 비콘 데이터 패킷 구조체 (게이트웨이와 동일해야 함)
@@ -170,7 +171,7 @@ static void remove_outliers_iqr(float *data, int *count) {
     float lower_bound = q1 - 1.5f * iqr;
     float upper_bound = q3 + 1.5f * iqr;
 
-    ESP_LOGI(TAG, "IQR 필터: Q1=%.2f, Q3=%.2f, IQR=%.2f, 범위=[%.2f, %.2f]",
+    ESP_LOGD(TAG, "IQR 필터: Q1=%.2f, Q3=%.2f, IQR=%.2f, 범위=[%.2f, %.2f]",
             q1, q3, iqr, lower_bound, upper_bound);
 
     free(sorted);
@@ -181,12 +182,12 @@ static void remove_outliers_iqr(float *data, int *count) {
         if (data[i] >= lower_bound && data[i] <= upper_bound) {
             data[new_count++] = data[i];
         } else {
-            ESP_LOGW(TAG, "이상치 제거: %.2f m", data[i]);
+            ESP_LOGD(TAG, "이상치 제거: %.2f m", data[i]);
         }
     }
 
     *count = new_count;
-    ESP_LOGI(TAG, "이상치 제거 후 샘플 개수: %d", new_count);
+    ESP_LOGD(TAG, "이상치 제거 후 샘플 개수: %d", new_count);
 }
 
 
@@ -532,7 +533,7 @@ static esp_err_t perform_ftm_measurement(uint8_t *bssid, uint8_t channel,
                     }
                 }
 
-                ESP_LOGI(TAG, "이상치 제거 전 유효 샘플: %d개", valid_count);
+                ESP_LOGD(TAG, "이상치 제거 전 유효 샘플: %d개", valid_count);
 
                 // IQR 이상치 제거 적용
                 if (valid_count >= MIN_VALID_SAMPLES) {
@@ -580,7 +581,7 @@ static esp_err_t perform_ftm_measurement(uint8_t *bssid, uint8_t channel,
             best_rtt_ns = (uint32_t)((best_distance / FTM_CALIBRATION_FACTOR) * 2.0 / 0.299792458);
             final_result = ESP_OK;
 
-            ESP_LOGI(TAG, "최선의 결과 갱신: 거리=%.2f m, RTT=%"PRIu32" ns, 분산=%.4f, 샘플=%d개",
+            ESP_LOGD(TAG, "최선의 결과 갱신: 거리=%.2f m, RTT=%"PRIu32" ns, 분산=%.4f, 샘플=%d개",
                     best_distance, best_rtt_ns, best_variance, best_valid_count);
 
             // 분산이 충분히 낮으면 재시도 중단
@@ -645,18 +646,20 @@ static esp_err_t send_data_with_retry(beacon_data_packet_t *packet) {
         vTaskDelay(pdMS_TO_TICKS(100));  // 채널 변경 안정화 대기
 
         // 피어가 추가되지 않았으면 추가
-        esp_now_peer_info_t peer_info = {0};
-        memcpy(peer_info.peer_addr, floor_list[gw].gateway_mac, 6);
-        peer_info.channel = floor_list[gw].channel;  // 올바른 채널 설정
-        peer_info.encrypt = false;
-
         if (!esp_now_is_peer_exist(floor_list[gw].gateway_mac)) {
+            esp_now_peer_info_t peer_info = {0};
+            memcpy(peer_info.peer_addr, floor_list[gw].gateway_mac, 6);
+            peer_info.channel = floor_list[gw].channel;
+            peer_info.encrypt = false;
+
             esp_err_t add_result = esp_now_add_peer(&peer_info);
             if (add_result != ESP_OK) {
                 ESP_LOGE(TAG, "피어 추가 실패: %s", esp_err_to_name(add_result));
                 continue;
             }
-            ESP_LOGI(TAG, "피어 추가 성공");
+            ESP_LOGD(TAG, "피어 추가 성공: "MACSTR, MAC2STR(floor_list[gw].gateway_mac));
+        } else {
+            ESP_LOGD(TAG, "피어 이미 존재: "MACSTR, MAC2STR(floor_list[gw].gateway_mac));
         }
 
         // 재시도하며 전송
@@ -692,7 +695,7 @@ static esp_err_t send_data_with_retry(beacon_data_packet_t *packet) {
 // ===== 메인 애플리케이션 =====
 
 void app_main(void) {
-    ESP_LOGI(TAG, "비콘 디바이스 시작 (v11 - 칼만 필터 지원)");
+    ESP_LOGI(TAG, "비콘 디바이스 시작 (v11 - 칼만 필터 지원, 딥슬립 비활성화)");
 
     // NVS 초기화
     esp_err_t ret = nvs_flash_init();
@@ -738,8 +741,15 @@ void app_main(void) {
     // FTM 이벤트 그룹 생성
     ftm_event_group = xEventGroupCreate();
 
-    // 메인 작업 (Deep Sleep 전 1회 실행)
-    ESP_LOGI(TAG, "=== 메인 측정 사이클 시작 ===");
+    // ESP-NOW 초기화 (1회만 수행)
+    ESP_LOGI(TAG, "ESP-NOW 초기화");
+    ESP_ERROR_CHECK(esp_now_init());
+    ESP_ERROR_CHECK(esp_now_register_send_cb(data_send_cb));
+    ESP_LOGI(TAG, "ESP-NOW 초기화 완료");
+
+    // 메인 작업 (무한 루프)
+    while (1) {
+        ESP_LOGI(TAG, "=== 메인 측정 사이클 시작 ===");
 
     // 1단계: 모든 게이트웨이 AP 스캔 및 정보 수집
     ESP_LOGI(TAG, "1단계: 게이트웨이 AP 스캔하여 모든 채널 정보 수집");
@@ -782,8 +792,8 @@ void app_main(void) {
             free(ap_records);
             if (gateway_list) free(gateway_list);
             if (unique_channel_list) free(unique_channel_list);
-            esp_deep_sleep(SLEEP_DURATION_SEC * 1000000);
-            return;
+            vTaskDelay(pdMS_TO_TICKS(ERROR_RETRY_DELAY_SEC * 1000));
+            continue;
         }
 
         // 모든 게이트웨이 AP 수집 (break 제거)
@@ -797,7 +807,7 @@ void app_main(void) {
                 gateway_list[gateway_count].channel = ap_records[i].primary;
                 gateway_list[gateway_count].rssi = ap_records[i].rssi;
 
-                ESP_LOGI(TAG, "게이트웨이 %d: "MACSTR" (채널 %d, RSSI: %d)",
+                ESP_LOGD(TAG, "게이트웨이 %d: "MACSTR" (채널 %d, RSSI: %d)",
                         gateway_count + 1, MAC2STR(ap_records[i].bssid),
                         ap_records[i].primary, ap_records[i].rssi);
 
@@ -812,7 +822,7 @@ void app_main(void) {
                 if (!channel_exists) {
                     unique_channel_list[unique_channel_count] = ap_records[i].primary;
                     unique_channel_count++;
-                    ESP_LOGI(TAG, "새 채널 추가: %d (총 %d개 채널)",
+                    ESP_LOGD(TAG, "새 채널 추가: %d (총 %d개 채널)",
                             ap_records[i].primary, unique_channel_count);
                 }
 
@@ -824,21 +834,15 @@ void app_main(void) {
     }
 
     if (gateway_count == 0) {
-        ESP_LOGW(TAG, "게이트웨이를 찾을 수 없음, Deep Sleep 진입");
+        ESP_LOGW(TAG, "게이트웨이를 찾을 수 없음, 재시도 대기");
         if (gateway_list) free(gateway_list);
         if (unique_channel_list) free(unique_channel_list);
-        esp_deep_sleep(SLEEP_DURATION_SEC * 1000000);
-        return;
+        vTaskDelay(pdMS_TO_TICKS(ERROR_RETRY_DELAY_SEC * 1000));
+        continue;
     }
 
     ESP_LOGI(TAG, "스캔 완료: %d개 게이트웨이, %d개 채널 발견",
             gateway_count, unique_channel_count);
-
-    // ESP-NOW 초기화 (채널 순회 전 1회)
-    ESP_LOGI(TAG, "ESP-NOW 초기화");
-    ESP_ERROR_CHECK(esp_now_init());
-    ESP_ERROR_CHECK(esp_now_register_send_cb(data_send_cb));
-    vTaskDelay(pdMS_TO_TICKS(100));
 
     // FTM 결과를 저장할 구조체
     typedef struct {
@@ -858,8 +862,8 @@ void app_main(void) {
         ESP_LOGE(TAG, "FTM 결과 메모리 할당 실패");
         free(gateway_list);
         free(unique_channel_list);
-        esp_deep_sleep(SLEEP_DURATION_SEC * 1000000);
-        return;
+        vTaskDelay(pdMS_TO_TICKS(ERROR_RETRY_DELAY_SEC * 1000));
+        continue;
     }
 
     // 2~5단계: 채널 순회 메인 루프
@@ -883,7 +887,7 @@ void app_main(void) {
         ESP_ERROR_CHECK(esp_now_register_recv_cb(floor_recv_cb));
         vTaskDelay(pdMS_TO_TICKS(FLOOR_DISCOVERY_DURATION_MS));
         ESP_ERROR_CHECK(esp_now_unregister_recv_cb());
-        ESP_LOGI(TAG, "층 발견 완료: 현재까지 총 %d개 게이트웨이", floor_count);
+        ESP_LOGD(TAG, "층 발견 완료: 현재까지 총 %d개 게이트웨이", floor_count);
 
         // 현재 채널의 게이트웨이에 대해 FTM 측정
         ESP_LOGI(TAG, "채널 %d의 게이트웨이 FTM 측정 시작", current_channel);
@@ -925,7 +929,7 @@ void app_main(void) {
             }
         }
 
-        ESP_LOGI(TAG, "채널 %d 처리 완료 (현재까지 FTM 성공: %d개)",
+        ESP_LOGD(TAG, "채널 %d 처리 완료 (현재까지 FTM 성공: %d개)",
                 current_channel, final_ftm_count);
     }
 
@@ -941,10 +945,10 @@ void app_main(void) {
 
     // 최소 1개 이상의 FTM 측정값이 있어야 전송
     if (final_ftm_count < 1) {
-        ESP_LOGW(TAG, "FTM 측정값 없음 (%d < 1), Deep Sleep 진입", final_ftm_count);
+        ESP_LOGW(TAG, "FTM 측정값 없음 (%d < 1), 재시도 대기", final_ftm_count);
         free(final_ftm_results);
-        esp_deep_sleep(SLEEP_DURATION_SEC * 1000000);
-        return;
+        vTaskDelay(pdMS_TO_TICKS(ERROR_RETRY_DELAY_SEC * 1000));
+        continue;
     }
 
     ESP_LOGI(TAG, "FTM 측정 완료: %d개 앵커 데이터 수집 (최소 1개 이상 충족)", final_ftm_count);
@@ -1009,7 +1013,19 @@ void app_main(void) {
         ESP_LOGE(TAG, "✗ 데이터 전송 실패");
     }
 
-    // 9단계: Deep Sleep 진입
-    ESP_LOGI(TAG, "9단계: %d초 동안 Deep Sleep 진입", SLEEP_DURATION_SEC);
-    esp_deep_sleep(SLEEP_DURATION_SEC * 1000000);
+        // 9단계: 사이클 완료 및 정리
+        ESP_LOGI(TAG, "9단계: 측정 사이클 완료");
+
+        // 메모리 정리 완료 확인
+        ESP_LOGD(TAG, "리소스 정리 완료");
+
+        // 다음 사이클 대기 (0초면 즉시 시작)
+        if (SLEEP_DURATION_SEC > 0) {
+            ESP_LOGI(TAG, "%d초 대기 후 다음 사이클", SLEEP_DURATION_SEC);
+            vTaskDelay(pdMS_TO_TICKS(SLEEP_DURATION_SEC * 1000));
+        } else {
+            ESP_LOGI(TAG, "즉시 다음 측정 사이클 시작");
+        }
+        ESP_LOGI(TAG, "=== 다음 측정 사이클 시작 ===");
+    } // while(1) 끝
 }
