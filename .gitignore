@@ -149,3 +149,4 @@ managed_components/
 
 # Claude
 .claude/
+.cache/
